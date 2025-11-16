@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gemini Visual Assistant</title>
-    <!-- 1. Load Tailwind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* Custom style for the video feed to ensure it's mirrored (like a selfie camera) */
@@ -18,28 +17,26 @@
     <div class="w-full max-w-2xl bg-gray-800 rounded-2xl shadow-2xl p-6 md:p-8 space-y-6">
         <h1 class="text-3xl font-bold text-center text-cyan-400">Gemini Visual Assistant</h1>
 
-        <!-- Video Feed Container -->
         <div class="relative w-full bg-gray-900 rounded-lg overflow-hidden shadow-lg aspect-video">
             <video id="videoElement" class="w-full h-full object-cover" autoplay muted playsinline></video>
-            <!-- Hidden canvas for capturing frames -->
             <canvas id="captureCanvas" class="hidden"></canvas>
         </div>
 
-        <!-- Controls -->
-        <div class="flex justify-center">
+        <div class="flex justify-center space-x-4">
             <button id="startButton" class="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-3 px-8 rounded-full text-lg transition-all duration-300 shadow-lg focus:outline-none focus:ring-4 focus:ring-cyan-300 disabled:bg-gray-600 disabled:cursor-not-allowed">
                 Start Assistant
             </button>
+            
+            <button id="stopButton" class="bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-8 rounded-full text-lg transition-all duration-300 shadow-lg focus:outline-none focus:ring-4 focus:ring-red-300 disabled:bg-gray-600 disabled:cursor-not-allowed" disabled>
+                Stop Assistant
+            </button>
         </div>
 
-        <!-- Status and Response Area -->
         <div class="space-y-4 text-center">
-            <!-- Status Display -->
             <div id="status" class="text-lg text-gray-400 h-6">
                 Click "Start" to begin...
             </div>
             
-            <!-- Assistant Response -->
             <div class="bg-gray-700 p-4 rounded-lg min-h-[100px] flex items-center justify-center shadow-inner">
                 <p id="responseText" class="text-xl font-medium"></p>
             </div>
@@ -51,35 +48,36 @@
         const videoElement = document.getElementById('videoElement');
         const canvas = document.getElementById('captureCanvas');
         const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton'); // <-- ADDED
         const statusElement = document.getElementById('status');
         const responseTextElement = document.getElementById('responseText');
 
+        // --- ADDED: State variables ---
+        let isAssistantActive = false;
+        let stream = null; // To keep track of the camera stream
+
         // --- 2. API Configuration ---
         // NOTE: Leave apiKey as "" - it will be automatically handled by the environment.
-        const apiKey = "AIzaSyAAmR_3eXcZwkXMFyhyErk1RSkrvJgYU_A"; 
-        // FIX: Corrected the typo in the API URL ("generativelightlanguage" to "generativelanguage")
+        const apiKey = "AIzaSyAAmR_3eXcZwkXMFyhyErk1RSkrvJgYU_A"; // <-- REMEMBER TO PUT YOUR API KEY HERE
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
         // --- 3. Web Speech API Setup ---
         
         // --- Speech Recognition (Speech-to-Text) ---
-        // Check for browser compatibility
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         let recognition;
 
         if (SpeechRecognition) {
             recognition = new SpeechRecognition();
-            recognition.continuous = false; // Only listen for a single utterance
-            recognition.interimResults = false; // We only want the final result
+            recognition.continuous = false;
+            recognition.interimResults = false;
             recognition.lang = 'en-US';
 
-            // Event handler when speech is recognized
             recognition.onresult = (event) => {
                 const transcript = event.results[0][0].transcript;
                 statusElement.textContent = `Heard: "${transcript}". Processing...`;
-                responseTextElement.textContent = ""; // Clear previous response
+                responseTextElement.textContent = ""; 
                 
-                // When we get a result, capture a frame and call Gemini
                 const base64ImageData = captureFrame();
                 if (base64ImageData) {
                     getGeminiResponse(transcript, base64ImageData);
@@ -88,44 +86,23 @@
                 }
             };
 
-            // Event handler for errors
             recognition.onerror = (event) => {
                 console.error("Speech recognition error:", event.error);
-                // FIX: Handle the 'not-allowed' error specifically
-                if (event.error === 'not-allowed') {
-                    statusElement.textContent = "Error: Mic permission denied.";
-                    // We can't continue, so we don't restart listening.
-                    // We'll also update the main button to reflect this.
-                    startButton.textContent = "Permission Denied";
-                    startButton.disabled = true;
-                } else if (event.error === 'no-speech') {
-                    statusElement.textContent = "Didn't hear anything. Listening again...";
-                } else {
-                    statusElement.textContent = "Speech error. Listening again...";
+                if (isAssistantActive) { // Only show error if we are supposed to be active
+                    statusElement.textContent = "Sorry, I didn't catch that. Listening again...";
                 }
             };
 
-            // Event handler when recognition ends
             recognition.onend = () => {
-                // FIX: This handler is called after onresult, onerror, or onnomatch.
-                // We restart listening *unless* an error has disabled the app
-                // or we are already processing a result (which calls speak, which restarts)
-                
-                const currentStatus = statusElement.textContent;
-                
-                if (!currentStatus.startsWith("Heard:") && 
-                    !currentStatus.startsWith("Thinking...") &&
-                    !currentStatus.startsWith("Error:") &&
-                    !startButton.disabled) 
-                {
-                    // This catches cases like 'no-speech' or other transient errors
-                    // and just tries again, as long as we're not disabled.
-                    startListening();
+                // This is now handled by the speak() function's onend
+                // We only re-listen if the assistant is active
+                if (isAssistantActive) {
+                    // This is a failsafe in case speak() doesn't trigger
+                    // But the main loop is in speak.onend
                 }
             };
 
         } else {
-            // Handle browsers that don't support Speech Recognition
             statusElement.textContent = "Sorry, your browser doesn't support speech recognition.";
             startButton.disabled = true;
         }
@@ -133,10 +110,6 @@
         // --- Speech Synthesis (Text-to-Speech) ---
         const synth = window.speechSynthesis;
 
-        /**
-         * Speaks the given text out loud.
-         * @param {string} text - The text to be spoken.
-         */
         function speak(text) {
             if (synth.speaking) {
                 console.error("Speech synthesis is already speaking.");
@@ -146,15 +119,18 @@
             const utterance = new SpeechSynthesisUtterance(text);
             
             utterance.onend = () => {
-                // IMPORTANT: Once the assistant has finished speaking, start listening again.
-                // This creates the conversational loop.
-                if (SpeechRecognition && !startButton.disabled) {
+                // MODIFIED: Only start listening again if the assistant is active
+                if (isAssistantActive && SpeechRecognition) {
                     startListening();
                 }
             };
 
             utterance.onerror = (event) => {
                 console.error("Speech synthesis error:", event.error);
+                 // Even on error, try to restart listening loop
+                if (isAssistantActive && SpeechRecognition) {
+                    startListening();
+                }
             };
             
             synth.speak(utterance);
@@ -162,76 +138,83 @@
 
         // --- 4. Main Application Logic ---
 
-        /**
-         * Starts the application: requests camera/mic permissions.
-         */
         async function startApp() {
             statusElement.textContent = "Requesting permissions...";
             try {
-                // Request both video and audio. Audio is needed for speech recognition.
-                // FIX: Changed video constraint to be more flexible for mobile.
-                // This PREFERS the rear camera ("environment") but will accept 
-                // any camera if that's not available.
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { 
-                        facingMode: { ideal: 'environment' } 
-                    }, 
+                // MODIFIED: Store stream in global variable
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment' }, 
                     audio: true 
                 });
 
-                // Attach the video stream to the video element
                 videoElement.srcObject = stream;
-                await videoElement.play(); // Ensure video is playing
+                await videoElement.play(); 
                 
-                // Update UI
+                // MODIFIED: Update UI
                 startButton.textContent = "Assistant is Active";
                 startButton.disabled = true;
+                stopButton.disabled = false; // <-- ADDED
+                isAssistantActive = true; // <-- ADDED
                 
-                // Start the conversational loop
                 speak("Hi! I'm ready. What are you looking for?");
-                // `speak()` will call `startListening()` onend.
 
             } catch (err) {
                 console.error("Error accessing media devices.", err);
-                // FIX: Show the specific error message to the user for better debugging.
-                statusElement.textContent = `Error: ${err.message}`;
-                // Don't use alert()
+                statusElement.textContent = "Error: Could not access camera or microphone.";
             }
         }
 
-        /**
-         * Starts the speech recognition service.
-         */
         function startListening() {
-            if (SpeechRecognition && !startButton.disabled) {
+            // MODIFIED: Check if active and use try/catch
+            if (SpeechRecognition && isAssistantActive) { 
                 statusElement.textContent = "Listening...";
-                recognition.start();
+                try {
+                    recognition.start();
+                } catch (e) {
+                    console.error("Recognition service error:", e);
+                    statusElement.textContent = "Trying to listen again...";
+                }
             }
         }
 
-        /**
-         * Captures a single frame from the video feed.
-         * @returns {string | null} Base64-encoded JPEG image data (without the prefix), or null on error.
-         */
+        // --- ADDED: New function to stop the assistant ---
+        function stopApp() {
+            isAssistantActive = false; // This stops the loops
+
+            // Stop speech recognition and synthesis
+            if (recognition) {
+                recognition.stop();
+            }
+            if (synth) {
+                synth.cancel();
+            }
+
+            // Stop the camera and microphone stream
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                videoElement.srcObject = null;
+            }
+
+            // Reset UI
+            statusElement.textContent = "Click 'Start' to begin...";
+            responseTextElement.textContent = "";
+            startButton.textContent = "Start Assistant";
+            startButton.disabled = false;
+            stopButton.disabled = true;
+        }
+
         function captureFrame() {
             try {
                 const context = canvas.getContext('2d');
-                // Set canvas dimensions to match the video feed
                 canvas.width = videoElement.videoWidth;
                 canvas.height = videoElement.videoHeight;
 
-                // Draw the current video frame onto the canvas
-                // We flip it back to normal (un-mirror) for the AI
                 context.save();
-                context.scale(-1, 1); // Flip horizontally
+                context.scale(-1, 1); 
                 context.drawImage(videoElement, -canvas.width, 0, canvas.width, canvas.height);
                 context.restore();
 
-                // Get the image data as a base64-encoded JPEG
-                // Format: "data:image/jpeg;base64,..."
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.7); // 70% quality
-
-                // Extract just the base64 data part
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.7); 
                 return dataUrl.split(',')[1];
             } catch (err) {
                 console.error("Error capturing frame:", err);
@@ -241,19 +224,18 @@
 
         // --- 5. Gemini API Call ---
 
-        /**
-         * Sends the user's question and the captured image to the Gemini API.
-         * @param {string} text - The user's transcribed speech.
-         * @param {string} base64ImageData - The base64-encoded image data.
-         */
         async function getGeminiResponse(text, base64ImageData) {
+            // ADDED: Check if assistant is active
+            if (!isAssistantActive) {
+                console.log("Assistant was stopped. Cancelling API request.");
+                return;
+            }
+
             statusElement.textContent = "Thinking...";
 
-            // This is the prompt for the AI. We're telling it to be a helpful assistant.
             const systemPrompt = "You are a helpful visual assistant. Your user is showing you a video feed and asking you questions. Answer their question based on what you see in the image. Be concise and descriptive. For example, if they ask 'where is my bottle?', say 'I see a bottle on the right side of the table.'";
 
             const payload = {
-                // System instruction to set the AI's persona
                 systemInstruction: {
                     parts: [{ text: systemPrompt }]
                 },
@@ -261,9 +243,7 @@
                     {
                         role: "user",
                         parts: [
-                            // Part 1: The user's spoken question
                             { text: text },
-                            // Part 2: The captured video frame
                             {
                                 inlineData: {
                                     mimeType: "image/jpeg",
@@ -276,8 +256,7 @@
             };
 
             try {
-                // Use the fetchWithBackoff function to make a resilient API call
-                const response = await fetchWith.fetchWithBackoff(apiUrl, {
+                const response = await fetchWithBackoff(apiUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -289,12 +268,10 @@
 
                 const result = await response.json();
                 
-                // Extract the text response from the API
                 const candidate = result.candidates?.[0];
                 if (candidate && candidate.content?.parts?.[0]?.text) {
                     const responseText = candidate.content.parts[0].text;
                     responseTextElement.textContent = responseText;
-                    // Speak the response, which will then restart the listening loop
                     speak(responseText);
                 } else {
                     console.error("Unexpected API response structure:", result);
@@ -305,24 +282,17 @@
                 console.error('Error calling Gemini API:', error);
                 statusElement.textContent = "Error connecting to AI. Please try again.";
                 speak("I'm having trouble connecting. Let's try again in a moment.");
-                // We still call speak so the 'onend' event will restart the listening loop
             }
         }
 
-        /**
-         * A wrapper for fetch() that includes exponential backoff and retries.
-         * This makes the app more robust if the API is temporarily busy.
-         */
         async function fetchWithBackoff(url, options, retries = 3, delay = 1000) {
             try {
                 return await fetch(url, options);
             } catch (err) {
                 if (retries > 0) {
-                    // Don't log to console, just retry quietly
                     await new Promise(resolve => setTimeout(resolve, delay));
-                    return fetchWithBackoff(url, options, retries - 1, delay * 2); // Exponential backoff
+                    return fetchWithBackoff(url, options, retries - 1, delay * 2); 
                 } else {
-                    // After all retries, throw the error
                     throw err;
                 }
             }
@@ -330,7 +300,7 @@
         
         // --- 6. Event Listeners ---
         startButton.addEventListener('click', startApp);
-
+        stopButton.addEventListener('click', stopApp); // <-- ADDED
     </script>
 </body>
 </html>
