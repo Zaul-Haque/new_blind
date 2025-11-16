@@ -91,15 +91,37 @@
             // Event handler for errors
             recognition.onerror = (event) => {
                 console.error("Speech recognition error:", event.error);
-                statusElement.textContent = "Sorry, I didn't catch that. Listening again...";
-                // Don't restart here, wait for the 'onend' to restart the loop
+                // FIX: Handle the 'not-allowed' error specifically
+                if (event.error === 'not-allowed') {
+                    statusElement.textContent = "Error: Mic permission denied.";
+                    // We can't continue, so we don't restart listening.
+                    // We'll also update the main button to reflect this.
+                    startButton.textContent = "Permission Denied";
+                    startButton.disabled = true;
+                } else if (event.error === 'no-speech') {
+                    statusElement.textContent = "Didn't hear anything. Listening again...";
+                } else {
+                    statusElement.textContent = "Speech error. Listening again...";
+                }
             };
 
             // Event handler when recognition ends
             recognition.onend = () => {
-                // This ensures we start listening again *after* the assistant speaks.
-                // The main loop is: listen -> process -> speak -> listen again
-                // See `speak()` function for the restart logic.
+                // FIX: This handler is called after onresult, onerror, or onnomatch.
+                // We restart listening *unless* an error has disabled the app
+                // or we are already processing a result (which calls speak, which restarts)
+                
+                const currentStatus = statusElement.textContent;
+                
+                if (!currentStatus.startsWith("Heard:") && 
+                    !currentStatus.startsWith("Thinking...") &&
+                    !currentStatus.startsWith("Error:") &&
+                    !startButton.disabled) 
+                {
+                    // This catches cases like 'no-speech' or other transient errors
+                    // and just tries again, as long as we're not disabled.
+                    startListening();
+                }
             };
 
         } else {
@@ -126,7 +148,7 @@
             utterance.onend = () => {
                 // IMPORTANT: Once the assistant has finished speaking, start listening again.
                 // This creates the conversational loop.
-                if (SpeechRecognition) {
+                if (SpeechRecognition && !startButton.disabled) {
                     startListening();
                 }
             };
@@ -181,7 +203,7 @@
          * Starts the speech recognition service.
          */
         function startListening() {
-            if (SpeechRecognition) {
+            if (SpeechRecognition && !startButton.disabled) {
                 statusElement.textContent = "Listening...";
                 recognition.start();
             }
@@ -255,7 +277,7 @@
 
             try {
                 // Use the fetchWithBackoff function to make a resilient API call
-                const response = await fetchWithBackoff(apiUrl, {
+                const response = await fetchWith.fetchWithBackoff(apiUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
